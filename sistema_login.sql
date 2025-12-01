@@ -20,9 +20,9 @@ SET time_zone = "+00:00";
 --
 -- Banco de dados: `sistema_login`
 --
-CREATE DATABASE sistema_login;
+
 -- --------------------------------------------------------
-USE sistema_login
+
 --
 -- Estrutura da tabela `registros`
 --
