@@ -1,0 +1,756 @@
+Salvar registro 
+
+ini_set('display_errors',1);
+error_reporting(E_ALL);
+Essas duas linhas fazem com que erros sejam exibidos na página.
+
+Ajuda a identificar problemas durante o desenvolvimento.
+
+Não é recomendado manter ativo em produção, por questões de segurança.
+
+Conexão com banco + sessão
+
+include 'conexao.php';
+session_start();
+conexao.php contém as credenciais de acesso ao banco (host, usuário, senha, BD).
+
+session_start() permite acessar informações do usuário logado.
+
+Sem a sessão, o sistema não saberia quem está registrando o ponto.
+Sem a conexão, nada seria salvo no banco.
+
+Verificação de acesso (segurança)
+if (!isset($_SESSION['usuario'])) {
+    http_response_code(401);
+    echo json_encode(['erro'=>'não autorizado']);
+    exit;
+}
+Aqui o script verifica se existe um usuário conectado.
+Caso não exista, ele bloqueia o acesso, responde com erro 401 e finaliza o código.
+
+Evita que alguém faça requisições sem estar logado, garantindo segurança.
+
+Recebe o JSON enviado pela aplicação
+
+$raw = file_get_contents('php://input');
+$data = json_decode($raw, true);
+Esse trecho pega o conteúdo recebido via POST e converte o JSON para array PHP.
+
+Significa que este arquivo é consumido por fetch/AJAX de um front-end.
+
+Se falhar:
+
+if (!$data) {
+    http_response_code(400);
+    echo json_encode(['erro'=>'payload inválido','detail'=>$raw]);
+    exit;
+}
+Se o JSON estiver incorreto, o sistema retorna status 400 (requisição inválida).
+
+Validação dos dados
+
+$nome = trim($data['nome'] ?? '');
+$horas = trim($data['horas'] ?? '');
+$usuario = $_SESSION['usuario'];
+
+if ($nome === '' || $horas === '') {
+    http_response_code(400);
+    echo json_encode(['erro'=>'nome ou horas vazias']);
+    exit;
+}
+Antes de salvar, o script verifica se nome e horas não estão vazios.
+
+Evita enviar para o banco valores nulos e registros inválidos.
+
+Preparação do INSERT com segurança (stmt)
+$stmt = $conexao->prepare("INSERT INTO registros (usuario_email, funcionario_nome, horas_trabalhadas) VALUES (?, ?, ?)");
+Utiliza prepared statement, evitando SQL Injection.
+
+
+$stmt->bind_param("sss", $usuario, $nome, $horas);
+Especifica que os valores são strings ("sss").
+
+Excelente prática de segurança — protege o banco.
+
+Execução e retorno da resposta
+if ($stmt->execute()) {
+    echo json_encode(['sucesso'=>true]);
+} else {
+    http_response_code(500);
+    echo json_encode(['erro'=>'falha ao salvar','detail'=>$stmt->error]);
+}
+Se o registro foi salvo → retorna JSON com { sucesso: true }
+Se deu erro → retorna status 500 informando o problema.
+
+Isso facilita muito o tratamento no front-end.
+
+
+Cadastro
+Início + conexão + sessão
+session_start();
+include('conexao.php');
+
+
+session_start() permite armazenar a identidade do usuário logado.
+
+include('conexao.php') conecta ao banco.
+
+Importante porque sem isso o sistema não poderia armazenar login nem gravar no BD.
+
+
+Verificação do método da requisição
+if ($_SERVER["REQUEST_METHOD"] == "POST") {
+
+
+Garante que o código só rodará quando o formulário for enviado.
+
+Evita execução desnecessária quando a página é apenas carregada.
+
+
+Recebimento dos dados
+$nome = $_POST['nome'];
+$email = $_POST['email'];
+$senha = password_hash($_POST['senha'], PASSWORD_DEFAULT);
+$cnpj = $_POST['cnpj'];
+
+
+Recebe dados do formulário.
+
+Senha é criptografada com password_hash → excelente segurança.
+
+Fundamental: armazenamento seguro de senha evita que elas fiquem legíveis no banco.
+
+
+Preparação da query para cadastro
+$sql = "INSERT INTO usuarios (nome, email, senha, cnpj) VALUES (?, ?, ?, ?)";
+$stmt = $conexao->prepare($sql);
+$stmt->bind_param("ssss", $nome, $email, $senha, $cnpj);
+
+
+Uso de prepared statements → evita SQL injection.
+
+Ótima prática de segurança.
+
+
+Função de validação de CNPJ pela API ReceitaWS
+function consultarCNPJ($cnpj) {
+    $cnpj = preg_replace('/[^0-9]/', '', $cnpj);
+    $url = "https://www.receitaws.com.br/v1/cnpj/$cnpj";
+    $json = file_get_contents($url);
+    $data = json_decode($json, true);
+
+    return (isset($data['status']) && $data['status'] == 'OK');
+}
+
+
+Essa função:
+
+Limpa caracteres não numéricos.
+
+Faz requisição à API da ReceitaWS.
+
+Retorna true se o CNPJ existe, false se inválido.
+
+Evita registros falsos no sistema → aumenta confiabilidade dos cadastros.
+
+
+Execução do cadastro (primeira parte)
+if (consultarCNPJ($cnpj)) {
+    if ($stmt->execute()) {
+        echo "Cadastro realizado com sucesso!";
+    } else {
+        echo "Erro ao cadastrar: " . $stmt->error;
+    }
+} else {
+    echo "Erro ao cadastrar: CNPJ inválido";
+}
+
+
+Só cadastra se o CNPJ realmente existe.
+
+Evita usuários com identificação empresarial falsa.
+
+Problema importante encontrado
+
+Depois do código acima, existe um segundo bloco repetindo a execução do cadastro:
+
+if ($stmt->execute() && consultarCNPJ($cnpj)) { ... }
+
+
+Isso significa que o sistema tenta cadastrar duas vezes seguidas, o que pode gerar:
+
+Problema	Consequência
+Inserção duplicada	Mesmo usuário pode ser registrado 2 vezes
+Alto número de requisições API	Pode resultar em bloqueio da API
+Falhas inesperadas	Banco pode impedir email repetido
+
+Isso precisa ser corrigido.
+A execução deveria acontecer apenas uma vez.
+
+
+Sessão + Cookies
+$_SESSION['nome'] = $nome;
+$_SESSION['email'] = $email;
+
+setcookie("nome", $nome, time() + (86400 * 30), "/");
+setcookie("email", $email, time() + (86400 * 30), "/");
+
+
+Após cadastrar o usuário:
+
+Sessão mantém ele logado no sistema
+Cookies guardam informação para preenchimento automático depois
+
+Isso melhora a experiência do usuário voltando no site posteriormente.
+
+
+Formulário HTML final
+
+Simples e funcional:
+
+<form method="POST">
+    Nome: <input type="text" name="nome" required ...>
+    Email: <input type="email" name="email" required ...>
+    Senha: <input type="password" name="senha" required>
+    CNPJ: <input type="text" name="cnpj" required>
+    <input type="submit" value="Cadastrar">
+</form>
+
+
+required evita submissão incompleta.
+
+Inputs padronizados.
+
+Usa cookies para pré-preencher nome e email.
+
+
+
+Página Inicial
+Sessão + conexão com banco
+session_start();
+include('conexao.php');
+
+
+session_start() habilita o uso de variáveis de sessão (necessário para manter o usuário logado).
+
+include('conexao.php') conecta ao banco para consultar o cadastro.
+
+Importante para validar usuários e controlar sessões.
+
+Verifica se o formulário foi enviado
+if ($_SERVER["REQUEST_METHOD"] == "POST") {
+
+
+Isso garante que o restante só rodará ao clicar no botão Entrar.
+
+Evita execução desnecessária ao apenas carregar a página.
+
+Captura dos dados digitados
+$cnpj = $_POST['cnpj'];
+$senha = $_POST['senha'];
+
+
+Recebe CNPJ e senha enviados pelo formulário.
+
+Consulta ao banco usando Prepared Statement
+$sql = "SELECT * FROM usuarios WHERE cnpj = ?";
+$stmt = $conexao->prepare($sql);
+$stmt->bind_param("s", $cnpj);
+$stmt->execute();
+$resultado = $stmt->get_result();
+
+
+Aqui o sistema procura no banco um usuário pelo CNPJ informado.
+
+bind_param evita SQL Injection → muito bom ponto de segurança.
+
+Verificando se o usuário existe
+if ($usuario = $resultado->fetch_assoc()) {
+
+
+Se encontrar registro, ele continua para validar senha.
+Se não encontrar:
+
+echo "Usuário não encontrado.";
+
+
+Feedback básico que indica que o CNPJ digitado não está cadastrado.
+
+Verificação de senha criptografada
+if (password_verify($senha, $usuario['senha'])) {
+
+
+password_verify compara a senha digitada com o hash salvo no banco.
+
+Seguro
+Boa prática
+Senhas nunca ficam expostas no banco
+
+Se correta:
+
+$_SESSION['usuario'] = $usuario['nome'];
+header("Location: home.php");
+
+
+Ou seja, o sistema:
+
+Ação	Função
+Seta a sessão do usuário	Mantém ele logado no resto da navegação
+Redireciona para home.php	Página principal do sistema
+
+Se a senha estiver errada:
+
+echo "Senha incorreta.";
+
+
+Home
+
+Controle de acesso e sessão
+session_start();
+if (!isset($_SESSION['usuario'])) {
+    header("Location: index.php");
+    exit;
+}
+
+
+Logo no início, o arquivo garante que apenas usuários autenticados possam acessar essa página.
+Se não existir sessão ativa, o usuário é redirecionado para a página de login.
+Isso é fundamental para segurança e impede acesso direto ao sistema sem autenticação.
+
+
+Estrutura HTML, CSS e Bootstrap
+
+O código HTML monta a interface principal do sistema com estilos próprios e inclusão do Bootstrap.
+Há estilização personalizada para botões, campos de entrada, tabela de registros e formatação geral.
+
+O layout contém:
+
+Saudação com o nome do usuário logado
+
+Campo para inserir nome do funcionário
+
+Sistema de registro de horários (Entrada / Saída)
+
+Botões para calcular horas, criar novas linhas de horário e salvar
+
+Listagem com registros anteriores + paginação + filtro
+
+É uma interface funcional e clara, o que torna a experiência de uso simples.
+
+
+Cálculo e registro de horas
+
+A lógica principal da página é feita em JavaScript.
+Dois pontos centrais:
+
+Função que calcula minutos totais trabalhados
+function calcularDiferencaMinutos(horaInicio, horaFim)
+
+
+Recebe arrays contendo entradas e saídas
+
+Converte horário para minutos
+
+Soma todas as diferenças
+
+Retorna o total de minutos
+
+Usa Math.abs para evitar valores negativos caso o usuário inverta entrada/saída
+
+Esse cálculo é o núcleo da lógica de jornada.
+
+Conversão de minutos para formato hh:mm
+function formatarHorario(totalMinutos)
+
+
+Divide minutos em horas e minutos restantes
+
+Usa padStart para manter formato 00:00
+
+Retorna string formatada para exibição
+
+Isso garante um formato padrão para armazenar no banco.
+
+
+Geração dinâmica de novos campos Entrada/Saída
+document.getElementById("add").addEventListener('click', () => { ... });
+
+
+Ao clicar no botão +, uma nova linha horário é criada dinamicamente:
+
+Cria novos inputs
+
+Aplica estilos e classes
+
+Gera botão para remover linha individual
+
+Isso permite registrar várias pausas no expediente (manhã, tarde, hora de almoço etc).
+
+
+Envio dos dados para o servidor
+
+O botão Calcular valida os campos e então:
+
+fetch('salvar_registro.php', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ nome: nome, horas: totalFmt })
+});
+
+
+O sistema envia nome e horas calculadas em JSON para gravação no banco.
+Após sucesso, exibe resultado e atualiza lista de registros.
+
+Esse método descentraliza o back-end e evita recarga de página.
+
+
+Carregamento e exibição de registros anteriores
+
+Logo ao carregar a página:
+
+fetchRegistros(1);
+
+
+Essa função busca registros salvos em fetch_registros.php.
+
+O sistema implementa:
+
+Filtro de busca por funcionário
+
+Paginação
+
+Preenchimento dinâmico da tabela
+
+renderTableRegistros
+renderPaginationRegistros
+
+
+Cada registro exibe:
+
+Funcionário
+
+Horas trabalhadas
+
+Data de registro
+
+Botão de exclusão
+
+
+Exclusão de registros
+
+Ao clicar no ícone de lixeira:
+
+fetch('excluir_registro.php', { method: 'POST', body: JSON.stringify({ id: r.id }) })
+
+
+O sistema solicita confirmação e, se aceito:
+
+Executa requisição para exclusão
+
+Atualiza lista sem recarregar página
+
+É uma interação completa de CRUD.
+
+
+fetch registros
+Controle de sessão e segurança
+session_start();
+include 'conexao.php';
+header('Content-Type: application/json; charset=utf-8');
+
+if (!isset($_SESSION['usuario'])) {
+    http_response_code(401);
+    echo json_encode(['erro'=>'não autorizado']);
+    exit;
+}
+
+
+Inicializa sessão e importa conexão com o banco
+
+Define retorno como JSON
+
+Caso o usuário não esteja logado → retorna erro 401 Unauthorized e encerra
+
+Garante que apenas usuários autenticados consigam acessar registros.
+
+Captura de parâmetros via GET e estrutura paginação
+$search = $_GET['search'] ?? '';
+$page = max(1, intval($_GET['page'] ?? 1));
+$perPage = max(1, intval($_GET['perPage'] ?? 5));
+$offset = ($page - 1) * $perPage;
+
+
+Esses valores são enviados pelo fetch() do JavaScript.
+
+search → filtro de pesquisa por funcionário
+
+page → página atual
+
+perPage → quantidade de registros por página
+
+offset → define onde o SQL começa a buscar
+
+Exemplo: page = 2 & perPage = 5 → começa a buscar no registro 6.
+
+Query principal de busca com filtro e paginação
+$sql = "SELECT id, funcionario_nome, horas_trabalhadas, data_registro
+        FROM registros
+        WHERE usuario_email = ?
+        AND funcionario_nome LIKE ?
+        ORDER BY data_registro DESC
+        LIMIT ? OFFSET ?";
+
+$stmt = $conexao->prepare($sql);
+$like = "%$search%";
+$stmt->bind_param("ssii", $usuario, $like, $perPage, $offset);
+$stmt->execute();
+$result = $stmt->get_result();
+
+
+Filtra registros do usuário logado
+
+Permite pesquisar funcionário por trecho do nome (LIKE %texto%)
+
+Ordena do mais recente para o mais antigo
+
+Retorna apenas os registros da página solicitada
+
+Isso evita carregar tudo de uma vez, economizando memória e tempo.
+
+Estruturação do retorno dos registros
+$registros = [];
+while($row = $result->fetch_assoc()){
+    $registros[] = $row;
+}
+
+
+Aqui transformamos o resultado SQL em um array PHP para enviar em JSON.
+
+Consulta separada para contar total de registros
+$stmtTotal = $conexao->prepare("SELECT COUNT(*) as total FROM registros WHERE usuario_email = ? AND funcionario_nome LIKE ?");
+$stmtTotal->bind_param("ss", $usuario, $like);
+$stmtTotal->execute();
+$resTotal = $stmtTotal->get_result()->fetch_assoc();
+$total = intval($resTotal['total']);
+
+
+Essa consulta é importante:
+
+Mesmo usando LIMIT/OFFSET, o sistema ainda precisa saber quantas páginas existem → por isso o COUNT está separado.
+
+JSON final entregue ao front-end
+echo json_encode([
+    'total' => $total,
+    'page' => $page,
+    'perPage' => $perPage,
+    'registros' => $registros
+]);
+
+
+O front recebe algo assim:
+
+{
+  "total": 32,
+  "page": 1,
+  "perPage": 5,
+  "registros": [
+    { "id":3, "funcionario_nome":"João", "horas":"07:40", "data":"2025-02-10" }
+  ]
+}
+
+
+Com isso o JavaScript consegue montar a tabela e a paginação corretamente.
+
+
+Excluir registros
+
+Configuração inicial + segurança
+ini_set('display_errors',1);
+error_reporting(E_ALL);
+
+include 'conexao.php';
+session_start();
+
+header('Content-Type: application/json; charset=utf-8');
+
+
+Ativa exibição de erros (bom para debug)
+
+Carrega conexão com o banco
+
+Inicia sessão
+
+Define o retorno como JSON → padrão de API REST
+
+Bloqueio caso o usuário não esteja logado
+if (!isset($_SESSION['usuario'])) {
+    http_response_code(401);
+    echo json_encode(['erro'=>'não autorizado']);
+    exit;
+}
+
+
+Evita que alguém sem sessão ou com requisição direta no navegador delete dados.
+
+Segurança essencial.
+
+Recebendo o JSON com o ID
+$raw = file_get_contents('php://input');
+$data = json_decode($raw, true);
+$id = isset($data['id']) ? intval($data['id']) : 0;
+
+
+Lê o corpo da requisição (JSON enviado pelo fetch)
+
+Converte para array
+
+Extrai o ID e converte para inteiro
+
+Caso o ID seja inválido:
+
+if ($id <= 0) {
+    http_response_code(400);
+    echo json_encode(['erro'=>'id inválido']);
+    exit;
+}
+
+Isso evita tentativas maliciosas como enviar texto no lugar de número.
+
+
+Verificando se o registro pertence ao usuário
+$usuario = $_SESSION['usuario'];
+$stmtCheck = $conexao->prepare("SELECT id FROM registros WHERE id = ? AND usuario_email = ?");
+$stmtCheck->bind_param("is", $id, $usuario);
+$stmtCheck->execute();
+$res = $stmtCheck->get_result();
+
+if ($res->num_rows === 0) {
+    http_response_code(403);
+    echo json_encode(['erro'=>'registro não encontrado ou sem permissão']);
+    exit;
+}
+
+
+Este é um dos pontos mais importantes:
+
+Impede que um usuário delete o registro de outro
+Impede excluir registros inexistentes
+Garante propriedade do dado
+
+Sem isso, bastaria enviar qualquer ID e apagar dados que não pertencem ao usuário — gravíssimo.
+
+Exclusão no banco
+$stmt = $conexao->prepare("DELETE FROM registros WHERE id = ?");
+if (!$stmt) {
+    http_response_code(500);
+    echo json_encode(['erro'=>'prepare falhou','detail'=>$conexao->error]);
+    exit;
+}
+
+$stmt->bind_param("i", $id);
+
+
+Caso prepare() falhe → retorna erro interno com descrição técnica.
+
+Executando de fato:
+
+if ($stmt->execute()) {
+    echo json_encode(['sucesso'=>true]);
+} else {
+    http_response_code(500);
+    echo json_encode(['erro'=>'falha ao excluir','detail'=>$stmt->error]);
+}
+
+
+Se tudo der certo → retorna { "sucesso": true }.
+
+
+Conexão :D
+$servidor = "localhost";
+$usuario = "root";
+$senha = "";
+$banco = "sistema_login";
+Define os dados necessários para acessar o banco:
+
+Variável	Função
+$servidor	endereço do banco (localhost para ambiente local)
+$usuario	usuário do MySQL
+$senha	senha do usuário do BD (vazia aqui, comum em ambiente local)
+$banco	nome do banco usado pelo sistema
+
+Criando a conexão
+$conexao = new mysqli($servidor, $usuario, $senha, $banco);
+Instancia o objeto mysqli que representa a conexão ativa.
+
+Se qualquer informação acima estiver errada, a conexão falha.
+
+Tratamento de erro básico
+if ($conexao->connect_error) {
+    die("Falha na conexão: " . $conexao->connect_error);
+}
+Se a conexão falhar, o script interrompe a execução e exibe a mensagem de erro.
+
+
+Banco de Dados
+O banco sistema_login possui duas tabelas principais que se relacionam funcionalmente:
+
+Tabela	Função
+usuários: Armazena informações de empresas/usuários que fazem login no sistema.
+registros : Guarda os lançamentos de hora dos funcionários ligados ao usuário logado.
+
+Essas duas tabelas são o núcleo da aplicação: quem acessa o sistema está em usuarios, e os pontos registrados por esse usuário ficam em registros.
+
+Tabela usuarios
+CREATE TABLE usuarios (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    nome VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL UNIQUE,
+    senha VARCHAR(255) NOT NULL,
+    cnpj VARCHAR(18) NOT null
+);
+
+Explicação campo a campo
+Campo	Tipo	Função
+id	INT, chave primária	Identificação única do usuário registrado.
+nome	VARCHAR(100)	Nome da empresa ou responsável.
+email	VARCHAR(100), UNIQUE	Login único — impede que dois usuários cadastrem o mesmo e-mail.
+senha	VARCHAR(255)	Armazena o hash da senha usando password_hash(). Tamanho 255 comporta bcrypt.
+cnpj	VARCHAR(18)	Guarda o CNPJ do usuário. Tipo texto é apropriado, já que CNPJ contém pontuação.
+
+Ponto importante:
+senha não guarda senha real, mas um hash seguro. Isso protege o usuário caso o banco seja comprometido.
+
+Tabela registros
+CREATE TABLE registros (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    usuario_email VARCHAR(100) NOT NULL,
+    funcionario_nome VARCHAR(100) NOT NULL,
+    horas_trabalhadas VARCHAR(10) NOT NULL,
+    data_registro DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+Explicação campo a campo
+Campo	Tipo	Função
+id	chave primária	Identificação única do registro.
+usuario_email	VARCHAR(100)	Indica qual usuário/empresa criou o registro. Usado para separação de dados.
+funcionario_nome	VARCHAR(100)	Nome do funcionário cujo horário foi registrado.
+horas_trabalhadas	VARCHAR(10)	Armazena o total calculado (formato HH:MM).
+data_registro	DATETIME, default CURRENT_TIMESTAMP	Guarda a data e hora da inserção automática.
+Sobre o campo usuario_email na tabela registros
+
+Ele funciona ligado ao login, garantindo que cada usuário só veja seus próprios registros.
+
+No código isso está refletido por:
+
+WHERE usuario_email = ?
+
+
+o que permite isolamento dos dados entre contas diferentes.
+
+Uma boa melhoria futura seria trocar por usuario_id com chave estrangeira:
+
+usuario_id INT,
+FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+
+
+Isso melhora consistência e evita risco de erro caso email seja alterado no futuro.
