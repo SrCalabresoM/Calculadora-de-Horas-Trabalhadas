@@ -6,7 +6,6 @@ Sumário
 - Linguagens e tecnologias usadas
 - Passo a passo das soluções
 - Resumo das funcionalidades importantes do código
-- Captura de tela
 - Conclusões
 - Autores
 
